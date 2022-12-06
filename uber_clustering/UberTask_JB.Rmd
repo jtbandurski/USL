@@ -1,0 +1,207 @@
+---
+title: "UberTask_JB"
+author: "Jakub Bandurski"
+date: "2022-11-21"
+output: html_document
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Data preprocessing
+
+First step in every data science oriented analysis is data cleaning. (In the spirit of popular saying garbage in garbage out)
+Data that we are analysing are longitude and latitude from NYC. We expect the values to be close to one another. That is exactly what we see from the output of summary() function - up to to degrees of difference. It is important that we see no NA values - no data insertion is needed. We can move to the main part of the task. Interestingly Uber labeled data with only five different base names.
+
+
+```{r}
+uber <- read.csv("uber-data.csv")
+summary(uber)
+sum(is.na(uber))
+```
+
+## Plotting the data
+
+In this particular case data is very easly interpretable. We are analysing longitude and latitude which can be visualised on a map.
+
+```{r include=FALSE}
+library(tidyverse)
+library(sf)
+library(mapview)
+```
+
+I have decided to plot 10000 randomly chosen observations from uber data set - choosing more becomes infeasable to render and to see through the data. Interactive visualisation generated thanks to mapview package. We store mean and standard deviation for later.
+
+```{r map}
+set.seed(123)
+small <- sample(1:nrow(uber), 10000)
+small_uber<-uber[small,]
+mapview(small_uber, xcol = "Lon", ycol = "Lat", crs = 4269, grid = FALSE)
+meanLon <- mean(small_uber[,"Lon"])
+meanLat <- mean(small_uber[,"Lat"])
+sdLon <- sd(small_uber[,"Lon"])
+sdLat <- sd(small_uber[,"Lat"])
+small_uber[,c("Lon","Lat")] <- as.data.frame(lapply(small_uber[,c("Lon","Lat")], scale))
+```
+
+### Grpahic analysis
+
+As we can see in the visualisation above most of the Uber pick ups happne on Manhattan. This was expected as it is the most crowded part of the NYC with most of the city life happening. At first glance we don't see any particular clusters within the Manhattan itself, however we can se that the south part is more densly populated with observations. Furthermore we can see two clusters which were expected - pick ups from Newark and JFK airports. Pick ups in rest of the borough are more sparse.
+
+
+## Search for the best clustering algorithm
+
+I have decided to compare three algorithms that were discussed during classes: kMeans, PAM and Clara.
+
+```{r include=FALSE}
+library(NbClust)
+library(ClusterR)
+library(factoextra)
+library(fpc)
+library(cluster)
+library(flexclust)
+```
+
+Firstly we need to divide data into train and test subsets - I have chosen division of 80/20.
+
+```{r train test}
+set.seed(123)
+test <- sample(1:nrow(small_uber),0.2*nrow(small_uber))
+small_uber[["train"]] <- TRUE
+small_uber[["train"]][test] <- FALSE
+
+
+```
+
+Let's look for the optimal number of clusters. Although most of the data is insde the Manhattan we could go for Manhattan metric but the coordinates are not aligned with the Manhattan itself and substntial part of the data is located outside Manhattan. Therfore euclidean metric is used.
+
+NbClust package suggests that the best number of clusters is 7 (searched from 2 to 10).
+```{r opt1}
+opt1<-NbClust(small_uber[small_uber["train"]==TRUE,c("Lon","Lat")], distance="euclidean", min.nc=2, max.nc=10, method="complete", index="ch")
+opt1$All.index
+opt1$Best.nc
+#opt1$Best.partition
+```
+Basing on the code below for the kmeans algorithm, the elbow method suggest 4 clusters, silhouette 4 or 8 clusters and the AIC suggests that the more clusters the better. We can see that the more clusters we introduce (up to 100) the worse the results in all indeces. Let's stick to 4 clusters for now.
+
+
+```{r opt2}
+opt2<-Optimal_Clusters_KMeans(small_uber[small_uber["train"]==TRUE,c("Lon","Lat")], max_clusters=100, plot_clusters = TRUE)
+opt2<-Optimal_Clusters_KMeans(small_uber[small_uber["train"]==TRUE,c("Lon","Lat")], max_clusters=100, plot_clusters=TRUE, criterion="silhouette")
+opt2<-Optimal_Clusters_KMeans(small_uber[small_uber["train"]==TRUE,c("Lon","Lat")], max_clusters=100, plot_clusters=TRUE, criterion="AIC")
+opt2<-Optimal_Clusters_KMeans(small_uber[small_uber["train"]==TRUE,c("Lon","Lat")], max_clusters=10, plot_clusters = TRUE)
+opt2<-Optimal_Clusters_KMeans(small_uber[small_uber["train"]==TRUE,c("Lon","Lat")], max_clusters=10, plot_clusters=TRUE, criterion="silhouette")
+opt2<-Optimal_Clusters_KMeans(small_uber[small_uber["train"]==TRUE,c("Lon","Lat")], max_clusters=10, plot_clusters=TRUE, criterion="AIC")
+```
+
+Generating kMeans model with k=4.We can see that the partitioning is not quite interesting to a human observer. When it comes to Calinski-Harabasz index it's value is 4202.386.
+
+```{r kmeans}
+km <- kmeans(small_uber[small_uber["train"]==TRUE,c("Lon","Lat")], 4)
+set.seed(123)
+calinhara(small_uber[small_uber["train"]==TRUE,c("Lon","Lat")], km$cluster)
+small_uber[small_uber["train"]==TRUE,"km"]<-km$cluster
+small_uber["Lon"]<-(small_uber["Lon"])*sdLon+meanLon
+small_uber["Lat"]<-(small_uber["Lat"])*sdLat+meanLat
+mapview(small_uber[small_uber["train"]==TRUE,], xcol = "Lon", ycol = "Lat",zcol ="km", crs = 4269, grid = FALSE)
+
+```
+
+Generating PAM model with k=4. Again the partitioning is not quite interpretable in a different way than North/South East/West quadrons. When it comes to Calinski-Harabasz index it's value is lower 3881.088.
+
+```{r pam}
+small_uber[,c("Lon","Lat")] <- as.data.frame(lapply(small_uber[,c("Lon","Lat")], scale))
+
+pam <- pam(small_uber[small_uber["train"]==TRUE,c("Lon","Lat")], 4)
+set.seed(123)
+calinhara(small_uber[small_uber["train"]==TRUE,c("Lon","Lat")], pam$cluster)
+small_uber[small_uber["train"]==TRUE,"pam"]<-pam$cluster
+small_uber["Lon"]<-(small_uber["Lon"])*sdLon+meanLon
+small_uber["Lat"]<-(small_uber["Lat"])*sdLat+meanLat
+mapview(small_uber[small_uber["train"]==TRUE,], xcol = "Lon", ycol = "Lat",zcol ="pam", crs = 4269, grid = FALSE)
+
+```
+
+Generating clara model with k=4. We can see subtle differences between these models. Even tough used indeces proposed 4 clusters it seems to be not enough. When it comes to Calinski-Harabasz index it's value is lower than kmeans - 3971.033.
+
+```{r}
+small_uber[,c("Lon","Lat")] <- as.data.frame(lapply(small_uber[,c("Lon","Lat")], scale))
+
+clara<-clara(small_uber[small_uber["train"]==TRUE,c("Lon","Lat")], 4, metric="euclidean", stand=FALSE, samples=5,
+           sampsize=50, trace=0, medoids.x=TRUE,
+           rngR=FALSE, pamLike=FALSE, correct.d=TRUE)
+set.seed(123)
+calinhara(small_uber[small_uber["train"]==TRUE,c("Lon","Lat")], clara$cluster)
+small_uber[small_uber["train"]==TRUE,"clara"]<-clara$cluster
+small_uber["Lon"]<-(small_uber["Lon"])*sdLon+meanLon
+small_uber["Lat"]<-(small_uber["Lat"])*sdLat+meanLat
+mapview(small_uber[small_uber["train"]==TRUE,], xcol = "Lon", ycol = "Lat",zcol ="clara", crs = 4269, grid = FALSE)
+
+```
+
+
+## Optimal Calinski-Harabasz kmeans
+
+Methods used above were  very time consuming. I have determined optimal in C-H sense number of clusters for k-means: 23. With Calinski-Harabasz index value of 4893.082.
+
+```{r }
+small_uber[,c("Lon","Lat")] <- as.data.frame(lapply(small_uber[,c("Lon","Lat")], scale))
+km2 <- kmeans(small_uber[small_uber["train"]==TRUE,c("Lon","Lat")], 23)
+set.seed(123)
+calinhara(small_uber[small_uber["train"]==TRUE,c("Lon","Lat")], km2$cluster)
+small_uber[small_uber["train"]==TRUE,"km2"]<-km2$cluster
+small_uber["Lon"]<-(small_uber["Lon"])*sdLon+meanLon
+small_uber["Lat"]<-(small_uber["Lat"])*sdLat+meanLat
+mapview(small_uber[small_uber["train"]==TRUE,], xcol = "Lon", ycol = "Lat",zcol ="km2", crs = 4269, grid = FALSE)
+
+```
+
+## Predictions
+The kMeans algorithm with k=23 had the best C-H index so we choose it for the prediction part of the task. The interactive visualisation below presents results of the prediction step. In order to make the figure more readable train data is displayed as transparent circles, while test data is presented as solid circles. As we can see the assignment of cluster makes sense in almost all cases - apart form the observations o the edges of clusters.
+
+```{r predict}
+small_uber[,c("Lon","Lat")] <- as.data.frame(lapply(small_uber[,c("Lon","Lat")], scale))
+
+kMeans<-as.kcca(km2, data=small_uber[small_uber["train"]==TRUE,c("Lon","Lat")])
+
+small_uber[small_uber["train"]==TRUE,"kMeans"]<-clusters(kMeans)
+small_uber["Lon"]<-(small_uber["Lon"])*sdLon+meanLon
+small_uber["Lat"]<-(small_uber["Lat"])*sdLat+meanLat
+
+
+
+small_uber[,c("Lon","Lat")] <- as.data.frame(lapply(small_uber[,c("Lon","Lat")], scale))
+predict <- predict(kMeans, newdata=small_uber[small_uber["train"]==FALSE,c("Lon","Lat")])
+small_uber[small_uber["train"]==FALSE,"kMeans"]<-predict
+small_uber["Lon"]<-(small_uber["Lon"])*sdLon+meanLon
+small_uber["Lat"]<-(small_uber["Lat"])*sdLat+meanLat
+
+mapview(small_uber[small_uber["train"]==TRUE,], xcol = "Lon", ycol = "Lat",zcol ="kMeans", crs = 4269, grid = FALSE, alpha=0.01) + mapview(small_uber[small_uber["train"]==FALSE,], xcol = "Lon", ycol = "Lat",zcol ="kMeans", crs = 4269, grid = FALSE, alpha=1)
+
+```
+
+Because this is an unsupervised algorithm we cannot discuss measures like accuracy. Instead we can compare the Calinski-Harabasz index values. For the train set it equals 4893.082 and for the test set 3465.973. We can see a drop in the value but this behaviour is expected. On the plus side the difference is not too large.
+```{r last}
+calinhara(small_uber[,c("Lon","Lat")], small_uber$kMeans)
+```
+
+
+
+## JFK terminals
+
+As a side challange I found with binseach that wi k=507 kmeans starts to differentiate JFK ariport terminals almost perfectly. That's amazing! (Neglecting C-H index)
+
+```{r ch}
+small_uber[,c("Lon","Lat")] <- as.data.frame(lapply(small_uber[,c("Lon","Lat")], scale))
+km3 <- kmeans(small_uber[small_uber["train"]==TRUE,c("Lon","Lat")], 507)
+set.seed(123)
+calinhara(small_uber[small_uber["train"]==TRUE,c("Lon","Lat")], km3$cluster)
+small_uber[small_uber["train"]==TRUE,"km3"]<-km3$cluster
+small_uber["Lon"]<-(small_uber["Lon"])*sdLon+meanLon
+small_uber["Lat"]<-(small_uber["Lat"])*sdLat+meanLat
+mapview(small_uber[small_uber["train"]==TRUE,], xcol = "Lon", ycol = "Lat",zcol ="km3", crs = 4269, grid = FALSE)
+
+```
